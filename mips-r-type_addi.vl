@@ -1,0 +1,177 @@
+// Behavioral model of MIPS - single cycle implementation, R-types and addi
+
+//16bit regfile
+module reg_file (RR1,RR2,WR,WD,RegWrite,RD1,RD2,clock);
+
+  input [1:0] RR1,RR2,WR;
+  input [15:0] WD;
+  input RegWrite,clock;
+  output [15:0] RD1,RD2;
+
+  reg [15:0] Regs[0:15];
+
+  assign RD1 = Regs[RR1];
+  assign RD2 = Regs[RR2];
+
+  initial Regs[0] = 0;
+  initial Regs[1] = 0;
+  initial Regs[2] = 0;
+  initial Regs[3] = 0;
+
+  always @(negedge clock)
+    if (RegWrite==1 & WR!=0)
+	Regs[WR] <= WD;
+
+endmodule
+
+//16bit ALU
+module alu (ALUOp,A,B,ALUOut,Zero);
+
+  input [2:0] ALUOp;
+  input [15:0] A,B;
+  output reg [15:0] ALUOut;
+  output Zero;
+
+  assign Zero = (ALUOut==0); // Zero is true if ALUOut is 0
+  always @(ALUOp, A, B)     // reevaluate if these change
+    case (ALUOp)
+      3'b000: ALUOut <= A & B;
+      3'b001: ALUOut <= A | B;
+      3'b010: ALUOut <= A + B;
+      3'b110: ALUOut <= A - B;
+      3'b111: ALUOut <= A < B ? 1:0;
+     default: ALUOut <= 0; //default to 0, should not happen;
+   endcase
+
+endmodule
+
+//16bit MainControl
+module MainControl (Op,Control);
+
+  input [3:0] Op;
+  output reg [5:0] Control; //REGDST(1), REGWRITE(1), ALUSRC(1), OP(3)
+
+  always @(Op) case (Op)
+    4'b0000: Control <= 6'b110010; // Rtype - ADD
+    4'b0001: Control <= 6'b110110; // Rtype - SUB
+    4'b0010: Control <= 6'b110000; // Rtype - AND
+    4'b0011: Control <= 6'b110001; // Rtype - OR
+    4'b0111: Control <= 6'b110111; // Rtype - SLT
+    4'b0100: Control <= 6'b111010; // Itype - ADDI
+
+  endcase
+
+endmodule
+
+//16bit MIPS CPU
+module CPU (clock,ALUOut,IR);
+
+  input clock;
+  output [15:0] ALUOut,IR;
+  reg[15:0] PC;
+  reg[15:0] IMemory[0:1023];
+  wire [15:0] IR,NextPC,A,B,ALUOut,RD2,SignExtend;
+  wire [2:0] ALUOp;
+  wire [1:0] WR;
+
+// Test Program:
+  initial begin
+  IMemory[0] = 16'b0100000100001111;  //addi $t1, $0,  15   # $t1=15
+  IMemory[1] = 16'b0100001000000111;  //addi $t2, $0,  7    # $t2= 7
+  IMemory[2] = 16'b0010011011000000;  //and  $t3, $t1, $t2  # $t3= 7
+  IMemory[3] = 16'b0001011110000000;  //sub  $t2, $t1, $t3  # $t2= 8
+  IMemory[4] = 16'b0011101110000000;  //or   $t2, $t2, $t3  # $t2=15
+  IMemory[5] = 16'b0000101111000000;  //add  $t3, $t2, $t3  # $t3=22
+  IMemory[6] = 16'b0111111001000000;  //slt  $t1, $t3, $t2  # $t1= 0
+  IMemory[7] = 16'b0111101101000000;  //slt  $t1, $t2, $t3  # $t1= 1
+
+  end
+
+  initial PC = 0;
+
+  assign IR = IMemory[PC>>2];
+
+  assign WR = (RegDst) ? IR[7:6]: IR[9:8]; // RegDst Mux
+
+  assign B  = (ALUSrc) ? SignExtend: RD2; // ALUSrc Mux
+
+  assign SignExtend = {{8{IR[7]}},IR[7:0]}; // sign extension unit
+
+  reg_file rf (IR[11:10],IR[9:8],WR,ALUOut,RegWrite,A,RD2,clock);
+
+  alu fetch (3'b010,PC,16'b0000000000000100,NextPC,Unused);
+
+  alu ex (ALUOp, A, B, ALUOut, Zero);
+
+  MainControl MainCtr (IR[15:12],{RegDst,RegWrite,ALUSrc,ALUOp});
+
+  always @(negedge clock) begin
+    PC <= NextPC;
+  end
+
+endmodule
+
+
+// Test module
+
+module test ();
+
+  reg clock;
+  wire [15:0] WD,IR;
+
+  CPU test_cpu(clock,WD,IR);
+
+  always #1 clock = ~clock;
+
+  initial begin
+    $display ("time clock IR                 WD");
+    $monitor ("%2d   %b     %b %b", $time,clock,IR,WD);
+    clock = 1;
+    #14 $finish;
+  end
+
+endmodule
+
+
+/* Compiling and simulation
+
+C:\Markov\CCSU Stuff\Courses\Spring-11\CS385\HDL>iverilog mips-r-type+addi.vl
+
+C:\Markov\CCSU Stuff\Courses\Spring-11\CS385\HDL>vvp a.out
+
+time clock IR       WD
+ 0   1     2009000f 0000000f
+ 1   0     200a0007 00000007
+ 2   1     200a0007 00000007
+ 3   0     012a5824 00000007
+ 4   1     012a5824 00000007
+ 5   0     012b5022 00000008
+ 6   1     012b5022 00000008
+ 7   0     014b5025 0000000f
+ 8   1     014b5025 0000000f
+ 9   0     016a482a 00000001
+10   1     016a482a 00000001
+11   0     014b482a 00000000
+12   1     014b482a 00000000
+
+D:\iverilog\bin>iverilog mips-r-type_addi.vl
+
+D:\iverilog\bin>vvp a.out
+time clock IR                 WD
+ 0   1     0100000100001111 0000000000001111
+ 1   0     0100001000000111 0000000000000111
+ 2   1     0100001000000111 0000000000000111
+ 3   0     0010011011000000 xxxxxxxxxxxxxxxx
+ 4   1     0010011011000000 xxxxxxxxxxxxxxxx
+ 5   0     0001011110000000 xxxxxxxxxxxxxxxx
+ 6   1     0001011110000000 xxxxxxxxxxxxxxxx
+ 7   0     0011101110000000 xxxxxxxxxxxxxxxx
+ 8   1     0011101110000000 xxxxxxxxxxxxxxxx
+ 9   0     0000101111000000 xxxxxxxxxxxxxxxx
+10   1     0000101111000000 xxxxxxxxxxxxxxxx
+11   0     0111111001000000 000000000000000x
+12   1     0111111001000000 000000000000000x
+13   0     0111101101000000 000000000000000x
+14   1     0111101101000000 000000000000000x
+
+*/
